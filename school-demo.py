@@ -1,20 +1,22 @@
-# 以下の基本設計とMySQLデータベース設計からPythonプログラムを生成。
-
-```python
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """
-University Management System – Python 実装例
-MySQL スキーマ（上記設計）に合わせて SQLAlchemy ORM でモデル化し、
-基本ビジネスロジック（学生登録・学科・教員・科目・履修登録・成績入力）を提供します。
+University Management System – Python implementation example.
+
+SQLAlchemy ORM models aligned to a MySQL schema and business logic for:
+- student registration
+- department and instructor management
+- course creation
+- enrollment registration
+- grade entry
 """
 
 from __future__ import annotations
 
 import enum
 from datetime import date
-from typing import List, Optional
+from typing import Optional
 
 from sqlalchemy import (
     Column,
@@ -28,13 +30,12 @@ from sqlalchemy import (
     UniqueConstraint,
     create_engine,
     func,
-    select,
 )
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import Session, relationship, sessionmaker
+from sqlalchemy.orm import Session, declarative_base, relationship, sessionmaker
+
 
 # ----------------------------------------------------------------------
-# Enum 定義（DB の ENUM カラムと同期）
+# Enums
 # ----------------------------------------------------------------------
 class GenderEnum(str, enum.Enum):
     M = "M"
@@ -73,7 +74,7 @@ class LetterGradeEnum(str, enum.Enum):
 
 
 # ----------------------------------------------------------------------
-# ORM モデル
+# ORM models
 # ----------------------------------------------------------------------
 Base = declarative_base()
 
@@ -91,9 +92,10 @@ class Student(Base):
     enrollment_year = Column(Integer, nullable=False)
     status = Column(Enum(StatusStudentEnum), default=StatusStudentEnum.active)
 
-    # リレーション
     enrollments = relationship(
-        "Enrollment", back_populates="student", cascade="all, delete-orphan"
+        "Enrollment",
+        back_populates="student",
+        cascade="all, delete-orphan",
     )
 
 
@@ -127,7 +129,8 @@ class Course(Base):
 
     course_id = Column(Integer, primary_key=True, autoincrement=True)
     dept_id = Column(Integer, ForeignKey("departments.dept_id"), nullable=False)
-    code = Column(String(20), unique=True, nullable=False)  # e.g. CS101
+    instructor_id = Column(Integer, ForeignKey("instructors.instructor_id"), nullable=True)
+    code = Column(String(20), unique=True, nullable=False)
     name = Column(String(200), nullable=False)
     credit = Column(SmallInteger, nullable=False)
     semester = Column(Enum(SemesterEnum), nullable=False)
@@ -135,7 +138,7 @@ class Course(Base):
     description = Column(Text, nullable=True)
 
     department = relationship("Department", back_populates="courses")
-    instructor = relationship("Instructor", uselist=False, back_populates="courses")
+    instructor = relationship("Instructor", back_populates="courses")
     enrollments = relationship("Enrollment", back_populates="course")
 
 
@@ -145,8 +148,8 @@ class Enrollment(Base):
     enrollment_id = Column(Integer, primary_key=True, autoincrement=True)
     student_id = Column(Integer, ForeignKey("students.student_id"), nullable=False)
     course_id = Column(Integer, ForeignKey("courses.course_id"), nullable=False)
-    term = Column(String(10), nullable=False)          # e.g. "2024S"
-    registration_date = Column(Date, default=func.current_date)
+    term = Column(String(10), nullable=False)
+    registration_date = Column(Date, default=func.current_date())
     status = Column(Enum(StatusEnrollmentEnum), default=StatusEnrollmentEnum.registered)
 
     student = relationship("Student", back_populates="enrollments")
@@ -163,30 +166,33 @@ class Grade(Base):
 
     grade_id = Column(Integer, primary_key=True, autoincrement=True)
     enrollment_id = Column(Integer, ForeignKey("enrollments.enrollment_id"), nullable=False)
-    score = Column(SmallInteger, nullable=False)                     # 0‑100
+    score = Column(SmallInteger, nullable=False)
     letter_grade = Column(Enum(LetterGradeEnum), nullable=False)
-    evaluation_date = Column(Date, default=func.current_date)
+    evaluation_date = Column(Date, default=func.current_date())
     remarks = Column(Text, nullable=True)
 
     enrollment = relationship("Enrollment", back_populates="grades")
 
 
 # ----------------------------------------------------------------------
-# DB 接続設定
+# DB connection
 # ----------------------------------------------------------------------
-def get_engine(db_url: str = "mysql+pymysql://user:password@localhost/university"):
-    """
-    必要に応じて環境変数や .env から取得した URL を渡すこと。
-    デフォルトはローカル MySQL 用サンプルです。
-    """
+import os
+
+def get_engine(db_url: Optional[str] = None):
+    db_url = db_url or os.environ.get(
+        "DATABASE_URL",
+        "mysql+pymysql://school:your_password@localhost/university?charset=utf8mb4",
+    )
     return create_engine(db_url, echo=False, future=True)
+
 
 
 SessionLocal = sessionmaker(bind=get_engine(), expire_on_commit=False, future=True)
 
 
 # ----------------------------------------------------------------------
-# ビジネスロジック
+# Business logic
 # ----------------------------------------------------------------------
 def add_student(
     session: Session,
@@ -211,7 +217,7 @@ def add_student(
         status=status,
     )
     session.add(stu)
-    session.flush()  # ID を取得したい場合に利用
+    session.flush()
     return stu
 
 
@@ -259,7 +265,6 @@ def add_course(
     year: int,
     description: Optional[str] = None,
 ) -> Course:
-    # 担当教員は dept 内の任意の Instructor を後から紐付けても OK
     course = Course(
         dept_id=dept_id,
         code=code,
@@ -283,12 +288,14 @@ def assign_instructor_to_course(
     course = session.get(Course, course_id)
     if not course:
         raise ValueError(f"Course {course_id} not found")
+
     instructor = session.get(Instructor, instructor_id)
     if not instructor:
         raise ValueError(f"Instructor {instructor_id} not found")
-    # 同一学科かどうかのチェック（ビジネスルール）
+
     if course.department.dept_id != instructor.department.dept_id:
-        raise ValueError("Instructor と Course が所属学科一致しません")
+        raise ValueError("Instructor and Course belong to different departments")
+
     course.instructor = instructor
 
 
@@ -301,19 +308,19 @@ def enroll_student(
     registration_date: Optional[date] = None,
     status: StatusEnrollmentEnum = StatusEnrollmentEnum.registered,
 ) -> Enrollment:
-    # 学期・年度が courses に一致するか検証
     course = session.get(Course, course_id)
     if not course:
         raise ValueError(f"Course {course_id} not found")
 
-    # term の形式は "YYYY{S|M|F|W}" と仮定
     try:
         year_str, season_char = term[:-1], term[-1]
         term_year = int(year_str)
-        season_map = {"S": SemesterEnum.Spring,
-                      "M": SemesterEnum.Summer,
-                      "F": SemesterEnum.Fall,
-                      "W": SemesterEnum.Winter}
+        season_map = {
+            "S": SemesterEnum.Spring,
+            "M": SemesterEnum.Summer,
+            "F": SemesterEnum.Fall,
+            "W": SemesterEnum.Winter,
+        }
         expected_semester = season_map[season_char.upper()]
     except Exception as exc:
         raise ValueError("Invalid term format") from exc
@@ -323,7 +330,6 @@ def enroll_student(
             f"Term {term} does not match Course {course.code} ({course.semester} {course.year})"
         )
 
-    # 重複登録防止は UNIQUE 制約で保証されるが、明示的にチェックも可
     existing = (
         session.query(Enrollment)
         .filter_by(student_id=student_id, course_id=course_id, term=term)
@@ -373,15 +379,14 @@ def input_grade(
 
 
 # ----------------------------------------------------------------------
-# サンプル実行（ユニットテスト感覚で呼び出せます）
+# Sample execution
 # ----------------------------------------------------------------------
 if __name__ == "__main__":
-    # データベース作成（初回のみ実行してください）
+    # First run only:
     # engine = get_engine()
     # Base.metadata.create_all(engine)
 
     with SessionLocal() as sess:
-        # ① 学生登録
         alice = add_student(
             sess,
             name="Alice Tanaka",
@@ -394,7 +399,6 @@ if __name__ == "__main__":
         )
         print(f"Added student id={alice.student_id}")
 
-        # ② 学科・教員登録
         cs_dept = add_department(sess, dept_name="Computer Science")
         dr_smith = add_instructor(
             sess,
@@ -406,7 +410,6 @@ if __name__ == "__main__":
         )
         print(f"Dept id={cs_dept.dept_id}, Instructor id={dr_smith.instructor_id}")
 
-        # ③ 科目追加
         cs101 = add_course(
             sess,
             dept_id=cs_dept.dept_id,
@@ -419,15 +422,21 @@ if __name__ == "__main__":
         )
         print(f"Course id={cs101.course_id}")
 
-        # ④ 担当教員割り当て
-        assign_instructor_to_course(sess, course_id=cs101.course_id, instructor_id=dr_smith.instructor_id)
+        assign_instructor_to_course(
+            sess,
+            course_id=cs101.course_id,
+            instructor_id=dr_smith.instructor_id,
+        )
 
-        # ⑤ 履修登録
         term = "2024F"
-        enr = enroll_student(sess, student_id=alice.student_id, course_id=cs101.course_id, term=term)
+        enr = enroll_student(
+            sess,
+            student_id=alice.student_id,
+            course_id=cs101.course_id,
+            term=term,
+        )
         print(f"Enrollment id={enr.enrollment_id}")
 
-        # ⑥ 成績入力
         grade = input_grade(
             sess,
             enrollment_id=enr.enrollment_id,
@@ -437,13 +446,4 @@ if __name__ == "__main__":
         )
         print(f"Grade id={grade.grade_id}, score={grade.score}")
 
-        # コミットして永続化
         sess.commit()
-```
-
-**ポイント**
-
-* `sqlalchemy`（>=2.0）を使用し、テーブル構造は質問中の CREATE TABLE と完全一致させました。  
-* 列型・制約は `Column` オプションで表現し、`ENUM` は Python の `enum.Enum` と同期させています。  
-* 各ビジネスステップ（学生・学科・教員・科目・履修・成績）は関数として切り出し、例外でエラーハンドリングしています。  
-* 最下部の `if __name__ == "__main__"` 部分は動作確認用のサンプルシナリオです。実運用時は適宜削除またはテストコードへ移行してください。
