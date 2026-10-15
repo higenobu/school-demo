@@ -383,8 +383,8 @@ def input_grade(
 # ----------------------------------------------------------------------
 if __name__ == "__main__":
     # First run only:
-    # engine = get_engine()
-    # Base.metadata.create_all(engine)
+    engine = get_engine()
+    Base.metadata.create_all(engine)
 
     with SessionLocal() as sess:
         alice = add_student(
